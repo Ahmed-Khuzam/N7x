@@ -1,122 +1,132 @@
+local WebhookManager = {}
 local HttpService = game:GetService("HttpService")
-local Webhook_URL = "https://discord.com/api/webhooks/1354208343874470010/TVEWeIpFVEI72sEvP0HCHwDz0oTzE_XB5ZphxjidqaT0wDA6hFjqHmID1JOmBmar7oYZ"
+local RunService = game:GetService("RunService")
 
-local player = game:GetService("Players").LocalPlayer
-while not player:FindFirstChild("PlayerGui") do wait(0.1) end
+local WEBHOOK_QUEUE = {}
+local IS_PROCESSING = false
+local RATE_LIMIT = 5
+local MAX_RETRIES = 3
 
-local adminGui = player:WaitForChild("PlayerGui"):WaitForChild("MainGui"):WaitForChild("AdminApp")
-local editFrame = adminGui:WaitForChild("MainFrame"):WaitForChild("EaditVars")
-local targetButton = editFrame:WaitForChild("btnVar")
-local targetIdField = editFrame:WaitForChild("txtPlrID")
-local varNameField = editFrame:WaitForChild("txtVarName")
-local varValueField = editFrame:WaitForChild("txtVarValue")
-
-local oldValues = {}
-
-local function getAdminInfo()
-    local info = {
-        Name = player.Name,
-        UserId = player.UserId,
-        plrCardName = player.Name,
-        plrCardId = "N/A"
-    }
+local function processQueue()
+    if IS_PROCESSING then return end
+    IS_PROCESSING = true
     
-    pcall(function()
-        info.plrCardName = player.plrVars.plrCardName.Value
-        info.plrCardId = player.plrVars.plrCardId.Value
-    end)
-    
-    return info
-end
-
-local function getTargetInfo(targetId)
-    targetId = tostring(targetId)
-    for _, player in ipairs(game:GetService("Players"):GetPlayers()) do
-        local success, cardId = pcall(function() return player.plrVars.plrCardId.Value end)
-        if (success and tostring(cardId) == targetId) or tostring(player.UserId) == targetId then
-            local targetInfo = {
-                plrCardName = player.Name,
-                UserId = player.UserId,
-                plrCardId = "N/A",
-                currentValue = "N/A"
-            }
-            
-            pcall(function()
-                targetInfo.plrCardName = player.plrVars.plrCardName.Value
-                targetInfo.plrCardId = player.plrVars.plrCardId.Value
-                targetInfo.currentValue = tostring(player.plrVars[varNameField.Text].Value)
+    while #WEBHOOK_QUEUE > 0 do
+        local request = table.remove(WEBHOOK_QUEUE, 1)
+        local retryCount = 0
+        local success = false
+        
+        repeat
+            success, response = pcall(function()
+                return HttpService:PostAsync(
+                    request.url,
+                    HttpService:JSONEncode(request.payload),
+                    Enum.HttpContentType.ApplicationJson
+                )
             end)
             
-            return targetInfo
+            if not success then
+                retryCount += 1
+                task.wait(2 ^ retryCount)
+            end
+        until success or retryCount >= MAX_RETRIES
+        
+        task.wait(RATE_LIMIT)
+    end
+    
+    IS_PROCESSING = false
+end
+
+function WebhookManager.send(url, data)
+    if RunService:IsStudio() then return false end
+    if not url or not data then return false end
+    
+    table.insert(WEBHOOK_QUEUE, {
+        url = url,
+        payload = data
+    })
+    
+    if not IS_PROCESSING then
+        task.spawn(processQueue)
+    end
+    
+    return true
+end
+
+function WebhookManager.monitorAdminPanel(player, webhookUrl)
+    local adminGui = player:WaitForChild("PlayerGui"):WaitForChild("MainGui"):WaitForChild("AdminApp")
+    local editFrame = adminGui:WaitForChild("MainFrame"):WaitForChild("EaditVars")
+    local targetButton = editFrame:WaitForChild("btnVar")
+    local targetIdField = editFrame:WaitForChild("txtPlrID")
+    local varNameField = editFrame:WaitForChild("txtVarName")
+    local varValueField = editFrame:WaitForChild("txtVarValue")
+
+    local oldValues = {}
+
+    local function getAdminInfo()
+        local info = {
+            Name = player.Name,
+            UserId = player.UserId,
+            plrCardName = player.Name,
+            plrCardId = "N/A"
+        }
+        
+        pcall(function()
+            info.plrCardName = player.plrVars.plrCardName.Value
+            info.plrCardId = player.plrVars.plrCardId.Value
+        end)
+        
+        return info
+    end
+
+    targetButton.MouseButton1Click:Connect(function()
+        local targetId = targetIdField.Text or "N/A"
+        local varName = varNameField.Text or "N/A"
+        local newValue = varValueField.Text or "N/A"
+        
+        local adminInfo = getAdminInfo()
+        local targetInfo = {
+            plrCardName = "Unknown",
+            UserId = targetId,
+            plrCardId = "N/A",
+            currentValue = "N/A"
+        }
+
+        for _, targetPlayer in ipairs(game:GetService("Players"):GetPlayers()) do
+            local success, cardId = pcall(function() 
+                return targetPlayer.plrVars.plrCardId.Value 
+            end)
+            
+            if (success and tostring(cardId) == targetId) or tostring(targetPlayer.UserId) == targetId then
+                pcall(function()
+                    targetInfo.plrCardName = targetPlayer.plrVars.plrCardName.Value
+                    targetInfo.plrCardId = targetPlayer.plrVars.plrCardId.Value
+                    targetInfo.currentValue = tostring(targetPlayer.plrVars[varName].Value)
+                end)
+                break
+            end
         end
-    end
-    return {
-        plrCardName = "Unknown", 
-        UserId = targetId, 
-        plrCardId = "N/A",
-        currentValue = "N/A"
-    }
-end
 
-local function sendAdminActionToWebhook()
-    local targetId = pcall(function() return targetIdField.Text end) and targetIdField.Text or "N/A"
-    local varName = pcall(function() return varNameField.Text end) and varNameField.Text or "N/A"
-    local newValue = pcall(function() return varValueField.Text end) and varValueField.Text or "N/A"
-    
-    local adminInfo = getAdminInfo()
-    local targetInfo = getTargetInfo(targetId)
-    local oldValue = oldValues[varName] or targetInfo.currentValue
-    
-    local message = string.format([[
-**📊 The Information - Admin Panel Activity**
-
-**🛠️ Administrator:**
-- Name: `%s`
-- UserID: `%s`
-- plrCardName: `%s`
-- plrCardId: `%s`
-
-**🎯 Target Player:**
-- plrCardName: `%s`
-- UserID: `%s`
-- plrCardId: `%s`
-
-**🔄 Value Change:**
-- Variable: `%s`
-- Old Value: `%s`
-- New Value: `%s`
-]],
-    adminInfo.Name,
-    adminInfo.UserId,
-    adminInfo.plrCardName,
-    adminInfo.plrCardId,
-    targetInfo.plrCardName,
-    targetInfo.UserId,
-    targetInfo.plrCardId,
-    varName,
-    oldValue,
-    newValue)
-
-    local payload = {
-        embeds = {{
+        local oldValue = oldValues[varName] or targetInfo.currentValue
+        
+        local embed = {
             title = "ADMIN PANEL MODIFICATION",
-            description = message,
+            description = string.format([[
+**👤 Admin:** %s (%s)
+**🎯 Target:** %s (%s)
+**🔄 Change:** %s: %s → %s]],
+                adminInfo.Name, adminInfo.UserId,
+                targetInfo.plrCardName, targetInfo.UserId,
+                varName, oldValue, newValue),
             color = 0x3498DB,
-            footer = {
-                text = "Action Performed: "..os.date("%Y-%m-%d %H:%M:%S")
-            }
-        }}
-    }
+            footer = {text = os.date("%Y-%m-%d %H:%M:%S")}
+        }
 
-    local success, response = pcall(function()
-        HttpService:PostAsync(Webhook_URL, HttpService:JSONEncode(payload))
-    end)
-    
-    if not success then
-        warn("Webhook failed:", response)
-    else
+        WebhookManager.send(webhookUrl, {embeds = {embed}})
         oldValues[varName] = newValue
-    end
+    end)
 end
 
-targetButton.MouseButton1Click:Connect(sendAdminActionToWebhook)
+task.spawn(processQueue)
+
+return WebhookManager
