@@ -1,248 +1,209 @@
-local HttpService = game:GetService("HttpService")
+-- ##########
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
 
-local setNameEvent = ReplicatedStorage:WaitForChild("SetPlayerNameEvent")
-local setJobEvent = ReplicatedStorage:WaitForChild("SetPlayerJobEvent")
+local CHECK_INTERVAL = 0.4
+local MAX_DISTANCE = 40
+local STRIKES_TO_KICK = 3
+local RESET_STRIKES_TIME = 30
+local RECOVER_TO_LAST_SAFE = true
 
-local defaultName = "مجهول"
-local defaultJob = "غير مصنف"
+local playerData = {}
 
-local firebaseURL = "https://sooncity2-default-rtdb.asia-southeast1.firebasedatabase.app/"
-local secretKey = "BjGEbDgid3LOUzaCTzp2nuEYSQYPpCA4je3kAYHb"
-
-local function getPlayerData(userId)
-    local url = firebaseURL .. "Players/" .. userId .. ".json?auth=" .. secretKey
-    local success, response = pcall(function() return HttpService:GetAsync(url) end)
-    if success and response then return HttpService:JSONDecode(response) end
-    return nil
-end
-
-local function savePlayerData(userId, data)
-    local url = firebaseURL .. "Players/" .. userId .. ".json?auth=" .. secretKey
-    local body = HttpService:JSONEncode(data)
-    pcall(function()
-        HttpService:RequestAsync({Url=url, Method="PUT", Headers={["Content-Type"]="application/json"}, Body=body})
-    end)
-end
-
-local function getLastID()
-    local url = firebaseURL .. "LastID.json?auth=" .. secretKey
-    local success, response = pcall(function() return HttpService:GetAsync(url) end)
-    if success and response then return tonumber(response) or 101 else return 101 end
-end
-
-local function setLastID(id)
-    local url = firebaseURL .. "LastID.json?auth=" .. secretKey
-    pcall(function()
-        HttpService:RequestAsync({Url=url, Method="PUT", Headers={["Content-Type"]="application/json"}, Body=tostring(id)})
-    end)
-end
-
-local function createLeaderstats(player, coins, money, kills)
-    local leaderstats = player:FindFirstChild("leaderstats") or Instance.new("Folder", player)
-    leaderstats.Name = "leaderstats"
-    local coinsValue = leaderstats:FindFirstChild("Coins") or Instance.new("IntValue", leaderstats)
-    coinsValue.Name = "Coins"
-    coinsValue.Value = coins or 0
-    local moneyValue = leaderstats:FindFirstChild("Money") or Instance.new("IntValue", leaderstats)
-    moneyValue.Name = "Money"
-    moneyValue.Value = money or 0
-    local killValue = leaderstats:FindFirstChild("Kill") or Instance.new("IntValue", leaderstats)
-    killValue.Name = "Kill"
-    killValue.Value = kills or 0
-end
-
-local function createPlayerValues(player, name, id)
-    local cardID = player:FindFirstChild("CardID") or Instance.new("IntValue", player)
-    cardID.Name = "CardID"
-    cardID.Value = id
-    local cardName = player:FindFirstChild("CardName") or Instance.new("StringValue", player)
-    cardName.Name = "CardName"
-    cardName.Value = name
-end
-
-local function createPlrVars(player, jobName)
-    local plrVars = player:FindFirstChild("plrVars") or Instance.new("Folder", player)
-    plrVars.Name = "plrVars"
-    local jobValue = plrVars:FindFirstChild("Job") or Instance.new("StringValue", plrVars)
-    jobValue.Name = "Job"
-    jobValue.Value = jobName or defaultJob
-end
-
-local function addNameTag(player)
-    local character = player.Character
-    if not character or not character:FindFirstChild("Head") then return end
-    local head = character.Head
-    if head:FindFirstChild("NameTag") then head.NameTag:Destroy() end
-    
-    local gui = Instance.new("BillboardGui", head)
-    gui.Name = "NameTag"
-    gui.Adornee = head
-    gui.Size = UDim2.new(0,200,0,75)
-    gui.StudsOffset = Vector3.new(0,3,0)
-    gui.MaxDistance = 60
-    gui.AlwaysOnTop = true
-    
-    local mainFrame = Instance.new("Frame", gui)
-    mainFrame.Size = UDim2.new(1,0,1,0)
-    mainFrame.BackgroundTransparency = 1
-    
-    local stroke = Instance.new("UIStroke", mainFrame)
-    stroke.Thickness = 2
-    stroke.Color = Color3.fromRGB(0,0,0)
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    
-    local nameFrame = Instance.new("Frame", mainFrame)
-    nameFrame.Size = UDim2.new(0.5,0,0.5,0)
-    nameFrame.BackgroundTransparency = 0.6
-    nameFrame.BackgroundColor3 = Color3.fromRGB(0,0,0)
-    local nameLabel = Instance.new("TextLabel", nameFrame)
-    nameLabel.Size = UDim2.new(1,0,1,0)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.TextScaled = true
-    nameLabel.Text = player:FindFirstChild("CardName") and player.CardName.Value or defaultName
-    nameLabel.TextColor3 = Color3.new(1,1,1)
-    nameLabel.TextStrokeColor3 = Color3.new(0,0,0)
-    nameLabel.TextStrokeTransparency = 0
-    
-    local idFrame = Instance.new("Frame", mainFrame)
-    idFrame.Size = UDim2.new(0.5,0,0.5,0)
-    idFrame.Position = UDim2.new(0.5,0,0,0)
-    idFrame.BackgroundTransparency = 0.6
-    idFrame.BackgroundColor3 = Color3.fromRGB(0,0,0)
-    local idLabel = Instance.new("TextLabel", idFrame)
-    idLabel.Size = UDim2.new(1,0,1,0)
-    idLabel.BackgroundTransparency = 1
-    idLabel.TextScaled = true
-    idLabel.Text = player:FindFirstChild("CardID") and player.CardID.Value or 0
-    idLabel.TextColor3 = Color3.new(1,1,1)
-    idLabel.TextStrokeColor3 = Color3.new(0,0,0)
-    idLabel.TextStrokeTransparency = 0
-    
-    local jobFrame = Instance.new("Frame", mainFrame)
-    jobFrame.Size = UDim2.new(1,0,0.5,0)
-    jobFrame.Position = UDim2.new(0,0,0.5,0)
-    jobFrame.BackgroundTransparency = 0.6
-    jobFrame.BackgroundColor3 = Color3.fromRGB(0,0,0)
-    local jobLabel = Instance.new("TextLabel", jobFrame)
-    jobLabel.Size = UDim2.new(1,0,1,0)
-    jobLabel.BackgroundTransparency = 1
-    jobLabel.TextScaled = true
-    local plrVars = player:FindFirstChild("plrVars")
-    local jobValue = plrVars and plrVars:FindFirstChild("Job")
-    jobLabel.Text = "[" .. (jobValue and jobValue.Value or defaultJob) .. "]"
-    jobLabel.TextColor3 = Color3.new(1,1,1)
-    jobLabel.TextStrokeColor3 = Color3.new(0,0,0)
-    jobLabel.TextStrokeTransparency = 0
-end
-
-local function setupPlayer(player)
-    local userId = tostring(player.UserId)
-    local data = getPlayerData(userId)
-    
-    if data then
-        createPlayerValues(player, data.Name or defaultName, data.ID or 0)
-        createPlrVars(player, (data.Job == "none" or data.Job == nil) and defaultJob or data.Job)
-        createLeaderstats(player, data.Coins or 0, data.Money or 0, data.Kill or 0)
-    else
-        local id = getLastID()
-        local newData = {Name=defaultName, ID=id, ChangedName=false, Coins=0, Money=0, Kill=0, Job=defaultJob}
-        savePlayerData(userId, newData)
-        setLastID(id+1)
-        createPlayerValues(player, defaultName, id)
-        createPlrVars(player, defaultJob)
-        createLeaderstats(player, 0,0,0)
+local function getData(player, create)
+    if not player then return nil end
+    local id = player.UserId
+    if not id or id <= 0 then return nil end
+    local d = playerData[id]
+    if not d and create then
+        d = {strikes = 0, lastStrikeTime = 0, monitoring = false}
+        playerData[id] = d
     end
-    
-    addNameTag(player)
+    return d
 end
 
-Players.PlayerAdded:Connect(function(player)
-    task.spawn(function()
-        setupPlayer(player)
-        
-        player.CharacterAdded:Connect(function(char)
-            task.spawn(function()
-                char:WaitForChild("HumanoidRootPart")
-                char:WaitForChild("Head")
-                local spawnCFrame = workspace.sp:FindFirstChild(player.Name)
-                if spawnCFrame then
-                    char.HumanoidRootPart.CFrame = spawnCFrame.CFrame
-                end
-                addNameTag(player)
-            end)
-        end)
-    end)
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    local userId = tostring(player.UserId)
-    local data = getPlayerData(userId) or {}
-    data.Name = player:FindFirstChild("CardName") and player.CardName.Value or defaultName
-    data.ID = player:FindFirstChild("CardID") and player.CardID.Value or 0
-    data.ChangedName = data.ChangedName or false
-    local leaderstats = player:FindFirstChild("leaderstats")
-    if leaderstats then
-        data.Coins = leaderstats:FindFirstChild("Coins") and leaderstats.Coins.Value or 0
-        data.Money = leaderstats:FindFirstChild("Money") and leaderstats.Money.Value or 0
-        data.Kill = leaderstats:FindFirstChild("Kill") and leaderstats.Kill.Value or 0
-    end
-    local plrVars = player:FindFirstChild("plrVars")
-    if plrVars then
-        data.Job = plrVars:FindFirstChild("Job") and plrVars.Job.Value or defaultJob
-    end
-    savePlayerData(userId, data)
-end)
-
-setNameEvent.OnServerEvent:Connect(function(player, newName)
-    local userId = tostring(player.UserId)
-    local data = getPlayerData(userId)
-    if not data or data.ChangedName then return end
-    data.Name = newName
-    if newName ~= defaultName then data.ChangedName = true end
-    savePlayerData(userId, data)
-    player.CardName.Value = newName
-    addNameTag(player)
-end)
-
-setJobEvent.OnServerEvent:Connect(function(player, newJob)
-    local userId = tostring(player.UserId)
-    local data = getPlayerData(userId)
-    if not data then return end
-    data.Job = (newJob == "none" or newJob == nil) and defaultJob or newJob
-    savePlayerData(userId, data)
-    
-    local plrVars = player:FindFirstChild("plrVars") or Instance.new("Folder", player)
-    plrVars.Name = "plrVars"
-    local jobValue = plrVars:FindFirstChild("Job") or Instance.new("StringValue", plrVars)
-    jobValue.Name = "Job"
-    jobValue.Value = data.Job
-    
-    addNameTag(player)
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(60)
-        for _, player in ipairs(Players:GetPlayers()) do
-            local userId = tostring(player.UserId)
-            local data = getPlayerData(userId) or {}
-            data.Name = player:FindFirstChild("CardName") and player.CardName.Value or defaultName
-            data.ID = player:FindFirstChild("CardID") and player.CardID.Value or 0
-            data.ChangedName = data.ChangedName or false
-            local leaderstats = player:FindFirstChild("leaderstats")
-            if leaderstats then
-                data.Coins = leaderstats:FindFirstChild("Coins") and leaderstats.Coins.Value or 0
-                data.Money = leaderstats:FindFirstChild("Money") and leaderstats.Money.Value or 0
-                data.Kill = leaderstats:FindFirstChild("Kill") and leaderstats.Kill.Value or 0
+local function isInSafeTeleportZone(position)
+    local parts = CollectionService:GetTagged("SafeTeleportZone")
+    for _, p in ipairs(parts) do
+        if p:IsA("BasePart") then
+            local size = p.Size / 2
+            local rel = p.CFrame:PointToObjectSpace(position)
+            if math.abs(rel.X) <= size.X and math.abs(rel.Y) <= size.Y and math.abs(rel.Z) <= size.Z then
+                return true
             end
-            local plrVars = player:FindFirstChild("plrVars")
-            if plrVars then
-                data.Job = plrVars:FindFirstChild("Job") and plrVars.Job.Value or defaultJob
-            end
-            savePlayerData(userId, data)
         end
     end
-end)
+    return false
+end
+
+local function flagAndHandle(player, reason)
+    local data = getData(player, false)
+    if not data then return end
+    data.strikes += 1
+    data.lastStrikeTime = tick()
+    if data.strikes >= STRIKES_TO_KICK then
+        pcall(function() player:Kick("Unauthorized teleport detected.") end)
+        end
+        end
+            
+            local function monitorCharacter(player, character)
+                if not player or not character then return end
+                local hrp = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
+                if not hrp then return end
+                local data = getData(player, true)
+                data.lastSafePos = hrp.Position
+                data.lastCheckTime = tick()
+                data.monitoring = true
+                task.spawn(function()
+                    while data.monitoring and player.Parent and character.Parent do
+                        if not hrp or not hrp.Parent then break end
+                        
+                        local canTeleport = false
+                        local plrVars = player:FindFirstChild("plrVars")
+                        if plrVars then
+                            local val = plrVars:FindFirstChild("plrCanTeleport")
+                            if val and val:IsA("BoolValue") and val.Value == true then
+                                canTeleport = true
+                            end
+                        end
+                        
+                        local pos = hrp.Position
+                        local dist = (pos - (data.lastSafePos or pos)).Magnitude
+                        local safe = isInSafeTeleportZone(pos) or isInSafeTeleportZone(data.lastSafePos or pos)
+                        
+                        if not canTeleport then
+                            if not safe and dist > (MAX_DISTANCE + 5) then
+                                if RECOVER_TO_LAST_SAFE and data.lastSafePos then
+                                    pcall(function()
+                                        if hrp and hrp.Parent then
+                                            hrp.CFrame = CFrame.new(data.lastSafePos) + Vector3.new(0, 3, 0)
+                                        end
+                                    end)
+                                end
+                                flagAndHandle(player, ("Sudden jump: %.2f"):format(dist))
+                            else
+                                data.lastSafePos = pos
+                            end
+                        else
+                            data.lastSafePos = pos
+                        end
+                        
+                        data.lastCheckTime = tick()
+                        task.wait(CHECK_INTERVAL)
+                    end
+                    data.monitoring = false
+                end)
+            end
+            
+            local function onCharacterAdded(player, character)
+                getData(player, true)
+                monitorCharacter(player, character)
+            end
+            
+            local function onPlayerAdded(player)
+                getData(player, true)
+                if player.Character then
+                    monitorCharacter(player, player.Character)
+                end
+                player.CharacterAdded:Connect(function(char) onCharacterAdded(player, char) end)
+                end
+                    
+                    Players.PlayerAdded:Connect(onPlayerAdded)
+                    Players.PlayerRemoving:Connect(function(player)
+                        local id = player.UserId
+                        if id and playerData[id] then
+                            playerData[id].monitoring = false
+                            playerData[id] = nil
+                        end
+                    end)
+                    
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        onPlayerAdded(p)
+                    end
+                    
+                    task.spawn(function()
+                        while true do
+                            for id, d in pairs(playerData) do
+                                if d.lastStrikeTime and tick() - d.lastStrikeTime > RESET_STRIKES_TIME then
+                                    d.strikes = 0
+                                end
+                            end
+                            task.wait(5)
+                        end
+                    end)
+                    
+
+
+-- ##########
+local Players = game:GetService("Players")
+                    local RunService = game:GetService("RunService")
+                    
+                    local airDistance = 10
+                    local vehicleLocks = {}
+                    local vehicleRetries = {}
+                    local lastVehiclePos = {}
+                    local maxRetries = 3
+                    local flyStrikes = {}
+                    local maxFlyStrikes = 5
+                    
+                    RunService.Heartbeat:Connect(function()
+                        for _, seat in ipairs(workspace:GetDescendants()) do
+                            if seat:IsA("VehicleSeat") and seat.Occupant then
+                                local vehicle = seat:FindFirstAncestorWhichIsA("Model")
+                                if vehicle and vehicle.PrimaryPart then
+                                    local origin = vehicle.PrimaryPart.Position
+                                    local rayParams = RaycastParams.new()
+                                    rayParams.FilterDescendantsInstances = {vehicle}
+                                    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+                                    
+                                    local result = workspace:Raycast(origin, Vector3.new(0, -1000, 0), rayParams)
+                                    local distance = result and (origin.Y - result.Position.Y) or math.huge
+                                    
+                                    local player = Players:GetPlayerFromCharacter(seat.Occupant.Parent)
+                                    if player then
+                                        if distance > airDistance then
+                                            if not vehicleLocks[vehicle] then
+                                                print(player.Name .. " يطير بالسيارة!!! 🚗✨")
+                                                
+                                                flyStrikes[player.UserId] = (flyStrikes[player.UserId] or 0) + 1
+                                                if flyStrikes[player.UserId] >= maxFlyStrikes then
+                                                    player:Kick("تم طردك: الطيران بالسيارة غير مسموح 🚨")
+                                                end
+                                                
+                                                vehicleLocks[vehicle] = true
+                                                task.delay(2, function()
+                                                    if vehicle and vehicle.PrimaryPart and vehicleLocks[vehicle] then
+                                                        task.spawn(function()
+                                                            for i = 1, 5 do
+                                                                print(player.Name .. " يطير بالسيارة!!! 🚗✨ (سبام)")
+                                                                task.wait(0.3)
+                                                            end
+                                                        end)
+                                                    end
+                                                end)
+                                            end
+                                        else
+                                            vehicleLocks[vehicle] = nil
+                                        end
+                                        
+                                        local lastPos = lastVehiclePos[vehicle] or origin
+                                        if (origin - lastPos).Magnitude > 50 then
+                                            vehicleRetries[vehicle] = (vehicleRetries[vehicle] or 0) + 1
+                                            if vehicleRetries[vehicle] <= maxRetries then
+                                                vehicle.PrimaryPart.CFrame = CFrame.new(lastPos)
+                                                print(player.Name .. " حاول النقل بالهاك! 🚨 إعادة السيارة لمكانها.")
+                                            else
+                                                vehicle:Destroy()
+                                                print(player.Name .. " كرر النقل الغير طبيعي أكثر من 3 مرات، تم حذف السيارة! 🚨")
+                                                vehicleRetries[vehicle] = nil
+                                            end
+                                        else
+                                            vehicleRetries[vehicle] = vehicleRetries[vehicle] or 0
+                                        end
+                                        
+                                        lastVehiclePos[vehicle] = origin
+                                    end
+                                end
+                            end
+                        end
+                    end)
