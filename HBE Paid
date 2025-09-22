@@ -1,209 +1,183 @@
--- ##########
+ 
+
+
+ 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
-local CollectionService = game:GetService("CollectionService")
 
-local CHECK_INTERVAL = 0.4
-local MAX_DISTANCE = 40
-local STRIKES_TO_KICK = 3
-local RESET_STRIKES_TIME = 30
-local RECOVER_TO_LAST_SAFE = true
-
-local playerData = {}
-
-local function getData(player, create)
-    if not player then return nil end
-    local id = player.UserId
-    if not id or id <= 0 then return nil end
-    local d = playerData[id]
-    if not d and create then
-        d = {strikes = 0, lastStrikeTime = 0, monitoring = false}
-        playerData[id] = d
-    end
-    return d
+local CraftRemote = ReplicatedStorage:FindFirstChild("CraftRequest")
+if not CraftRemote then
+    return
 end
 
-local function isInSafeTeleportZone(position)
-    local parts = CollectionService:GetTagged("SafeTeleportZone")
-    for _, p in ipairs(parts) do
-        if p:IsA("BasePart") then
-            local size = p.Size / 2
-            local rel = p.CFrame:PointToObjectSpace(position)
-            if math.abs(rel.X) <= size.X and math.abs(rel.Y) <= size.Y and math.abs(rel.Z) <= size.Z then
-                return true
+local Recipes = {
+MachineStar = {
+plrRailgun = {
+ItemsNeeded = { plrSteel = 10, plrMoney = 3000, plrStone = 30, plrFixBox = 2 },
+craftTime = 90,
+laborCost = 500,
+xpReward = 70,
+vipXpReward = 100,
+craftPowerNeeded = 10,
+},
+
+plrPowerDrink = {
+ItemsNeeded = { plrDiamond = 5, plrMoney = 3000, plrGold = 5 },
+craftTime = 60,
+laborCost = 400,
+xpReward = 150,
+vipXpReward = 200,
+craftPowerNeeded = 10,
+},
+
+plrBallMagic = {
+ItemsNeeded = { plrDiamond = 2, plrMoney = 1000, plrStone = 5 },
+craftTime = 30,
+laborCost = 200,
+xpReward = 100,
+vipXpReward = 150,
+craftPowerNeeded = 10,
+},
+},
+ 
+CraftTable = {
+plrBlackOil = {
+ItemsNeeded = { plrStone = 1, plrCoal = 2, plrScrap = 1 },
+craftTime = 90,
+laborCost = 10,
+xpReward = 20,
+vipXpReward = 50,
+craftPowerNeeded = 0,
+},
+
+plrFixBox = {
+ItemsNeeded = { plrScrap = 10, plrSteel = 3, plrBlackOil = 2 },
+craftTime = 10,
+laborCost = 20,
+xpReward = 15,
+vipXpReward = 20,
+craftPowerNeeded = 0,
+},
+
+plrSteel = {
+ItemsNeeded = { plrOldSteel = 2 },
+craftTime = 5,
+laborCost = 10,
+xpReward = 10,
+vipXpReward = 15,
+craftPowerNeeded = 0,
+},
+},
+}
+
+local ActiveCrafts = {}
+
+local function getStat(player, name)
+    local vars = player:FindFirstChild("plrVars")
+    local bag = player:FindFirstChild("plrBag")
+    if vars and vars:FindFirstChild(name) then
+        return vars:FindFirstChild(name)
+    elseif bag and bag:FindFirstChild(name) then
+        return bag:FindFirstChild(name)
+    end
+end
+
+local function processCraft(player, workshopName, itemName, amount)
+    ActiveCrafts[player] = ActiveCrafts[player] or {}
+    local key = workshopName..":"..itemName
+    if ActiveCrafts[player][key] then return end
+    ActiveCrafts[player][key] = true
+    
+    local recipeData = Recipes[workshopName] and Recipes[workshopName][itemName]
+    if not recipeData then
+        ActiveCrafts[player][key] = nil
+        return
+    end
+    
+    local ItemsNeeded = recipeData.ItemsNeeded
+    local craftTime = recipeData.craftTime or 5
+    local laborCost = recipeData.laborCost or 0
+    local xpReward = recipeData.xpReward or 0
+    local vipXpReward = recipeData.vipXpReward or xpReward
+    local craftPowerNeeded = recipeData.craftPowerNeeded or 0
+    
+    local craftPower = getStat(player, "plrCraftPower")
+    if not craftPower or craftPower.Value < craftPowerNeeded then
+        ActiveCrafts[player][key] = nil
+        return
+    end
+    
+    for i = 1, amount do
+        for reqName, cost in pairs(ItemsNeeded) do
+            local stat = getStat(player, reqName)
+            if not stat or stat.Value < cost then
+                ActiveCrafts[player][key] = nil
+                return
+            end
+        end
+        
+        local character = player.Character
+        if not character or not character:FindFirstChild("HumanoidRootPart") then
+            ActiveCrafts[player][key] = nil
+            return
+        end
+        local startPos = character.HumanoidRootPart.Position
+        
+        local elapsed = 0
+        while elapsed < craftTime do
+            if not character or not character:FindFirstChild("HumanoidRootPart") then
+                ActiveCrafts[player][key] = nil
+                return
+            end
+            local currentPos = character.HumanoidRootPart.Position
+            if (currentPos - startPos).Magnitude > 3 then
+                ActiveCrafts[player][key] = nil
+                return
+            end
+            elapsed += 0.1
+            task.wait(0.1)
+        end
+        
+        for reqName, cost in pairs(ItemsNeeded) do
+            local stat = getStat(player, reqName)
+            stat.Value -= cost
+        end
+        
+        local laborStat = getStat(player, "plrLabor")
+        if not laborStat or laborStat.Value < laborCost then
+            ActiveCrafts[player][key] = nil
+            return
+        end
+        laborStat.Value -= laborCost
+        
+        local output = getStat(player, itemName)
+        if not output then
+            ActiveCrafts[player][key] = nil
+            return
+        end
+        output.Value += 1
+        
+        local xpStat = getStat(player, "plrXp")
+        if xpStat then
+            local vip = getStat(player, "plrVip")
+            if vip and vip.Value == true then
+                xpStat.Value += vipXpReward
+            else
+                xpStat.Value += xpReward
             end
         end
     end
-    return false
+    
+    ActiveCrafts[player][key] = nil
 end
 
-local function flagAndHandle(player, reason)
-    local data = getData(player, false)
-    if not data then return end
-    data.strikes += 1
-    data.lastStrikeTime = tick()
-    if data.strikes >= STRIKES_TO_KICK then
-        pcall(function() player:Kick("Unauthorized teleport detected.") end)
-        end
-        end
-            
-            local function monitorCharacter(player, character)
-                if not player or not character then return end
-                local hrp = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
-                if not hrp then return end
-                local data = getData(player, true)
-                data.lastSafePos = hrp.Position
-                data.lastCheckTime = tick()
-                data.monitoring = true
-                task.spawn(function()
-                    while data.monitoring and player.Parent and character.Parent do
-                        if not hrp or not hrp.Parent then break end
-                        
-                        local canTeleport = false
-                        local plrVars = player:FindFirstChild("plrVars")
-                        if plrVars then
-                            local val = plrVars:FindFirstChild("plrCanTeleport")
-                            if val and val:IsA("BoolValue") and val.Value == true then
-                                canTeleport = true
-                            end
-                        end
-                        
-                        local pos = hrp.Position
-                        local dist = (pos - (data.lastSafePos or pos)).Magnitude
-                        local safe = isInSafeTeleportZone(pos) or isInSafeTeleportZone(data.lastSafePos or pos)
-                        
-                        if not canTeleport then
-                            if not safe and dist > (MAX_DISTANCE + 5) then
-                                if RECOVER_TO_LAST_SAFE and data.lastSafePos then
-                                    pcall(function()
-                                        if hrp and hrp.Parent then
-                                            hrp.CFrame = CFrame.new(data.lastSafePos) + Vector3.new(0, 3, 0)
-                                        end
-                                    end)
-                                end
-                                flagAndHandle(player, ("Sudden jump: %.2f"):format(dist))
-                            else
-                                data.lastSafePos = pos
-                            end
-                        else
-                            data.lastSafePos = pos
-                        end
-                        
-                        data.lastCheckTime = tick()
-                        task.wait(CHECK_INTERVAL)
-                    end
-                    data.monitoring = false
-                end)
-            end
-            
-            local function onCharacterAdded(player, character)
-                getData(player, true)
-                monitorCharacter(player, character)
-            end
-            
-            local function onPlayerAdded(player)
-                getData(player, true)
-                if player.Character then
-                    monitorCharacter(player, player.Character)
-                end
-                player.CharacterAdded:Connect(function(char) onCharacterAdded(player, char) end)
-                end
-                    
-                    Players.PlayerAdded:Connect(onPlayerAdded)
-                    Players.PlayerRemoving:Connect(function(player)
-                        local id = player.UserId
-                        if id and playerData[id] then
-                            playerData[id].monitoring = false
-                            playerData[id] = nil
-                        end
-                    end)
-                    
-                    for _, p in ipairs(Players:GetPlayers()) do
-                        onPlayerAdded(p)
-                    end
-                    
-                    task.spawn(function()
-                        while true do
-                            for id, d in pairs(playerData) do
-                                if d.lastStrikeTime and tick() - d.lastStrikeTime > RESET_STRIKES_TIME then
-                                    d.strikes = 0
-                                end
-                            end
-                            task.wait(5)
-                        end
-                    end)
-                    
-
-
--- ##########
-local Players = game:GetService("Players")
-                    local RunService = game:GetService("RunService")
-                    
-                    local airDistance = 10
-                    local vehicleLocks = {}
-                    local vehicleRetries = {}
-                    local lastVehiclePos = {}
-                    local maxRetries = 3
-                    local flyStrikes = {}
-                    local maxFlyStrikes = 5
-                    
-                    RunService.Heartbeat:Connect(function()
-                        for _, seat in ipairs(workspace:GetDescendants()) do
-                            if seat:IsA("VehicleSeat") and seat.Occupant then
-                                local vehicle = seat:FindFirstAncestorWhichIsA("Model")
-                                if vehicle and vehicle.PrimaryPart then
-                                    local origin = vehicle.PrimaryPart.Position
-                                    local rayParams = RaycastParams.new()
-                                    rayParams.FilterDescendantsInstances = {vehicle}
-                                    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-                                    
-                                    local result = workspace:Raycast(origin, Vector3.new(0, -1000, 0), rayParams)
-                                    local distance = result and (origin.Y - result.Position.Y) or math.huge
-                                    
-                                    local player = Players:GetPlayerFromCharacter(seat.Occupant.Parent)
-                                    if player then
-                                        if distance > airDistance then
-                                            if not vehicleLocks[vehicle] then
-                                                print(player.Name .. " يطير بالسيارة!!! 🚗✨")
-                                                
-                                                flyStrikes[player.UserId] = (flyStrikes[player.UserId] or 0) + 1
-                                                if flyStrikes[player.UserId] >= maxFlyStrikes then
-                                                    player:Kick("تم طردك: الطيران بالسيارة غير مسموح 🚨")
-                                                end
-                                                
-                                                vehicleLocks[vehicle] = true
-                                                task.delay(2, function()
-                                                    if vehicle and vehicle.PrimaryPart and vehicleLocks[vehicle] then
-                                                        task.spawn(function()
-                                                            for i = 1, 5 do
-                                                                print(player.Name .. " يطير بالسيارة!!! 🚗✨ (سبام)")
-                                                                task.wait(0.3)
-                                                            end
-                                                        end)
-                                                    end
-                                                end)
-                                            end
-                                        else
-                                            vehicleLocks[vehicle] = nil
-                                        end
-                                        
-                                        local lastPos = lastVehiclePos[vehicle] or origin
-                                        if (origin - lastPos).Magnitude > 50 then
-                                            vehicleRetries[vehicle] = (vehicleRetries[vehicle] or 0) + 1
-                                            if vehicleRetries[vehicle] <= maxRetries then
-                                                vehicle.PrimaryPart.CFrame = CFrame.new(lastPos)
-                                                print(player.Name .. " حاول النقل بالهاك! 🚨 إعادة السيارة لمكانها.")
-                                            else
-                                                vehicle:Destroy()
-                                                print(player.Name .. " كرر النقل الغير طبيعي أكثر من 3 مرات، تم حذف السيارة! 🚨")
-                                                vehicleRetries[vehicle] = nil
-                                            end
-                                        else
-                                            vehicleRetries[vehicle] = vehicleRetries[vehicle] or 0
-                                        end
-                                        
-                                        lastVehiclePos[vehicle] = origin
-                                    end
-                                end
-                            end
-                        end
-                    end)
+CraftRemote.OnServerEvent:Connect(function(player, args)
+    if type(args) ~= "table" then return end
+    local workshopName = args[1]
+    local itemName = args[2]
+    local amount = args[3]
+    if typeof(workshopName) ~= "string" or typeof(itemName) ~= "string" or typeof(amount) ~= "number" then
+        return
+    end
+    processCraft(player, workshopName, itemName, amount)
+end)
