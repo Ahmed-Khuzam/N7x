@@ -1,183 +1,319 @@
- 
-
-
- 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+-- // SODQIProtection.server.lua
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 
-local CraftRemote = ReplicatedStorage:FindFirstChild("CraftRequest")
-if not CraftRemote then
-    return
-end
+local ProtectionFolder = ReplicatedStorage:WaitForChild("SharedReplicated"):WaitForChild("Remotes")
+local PPC = ProtectionFolder:WaitForChild("PPC")
+local PingCheak = ProtectionFolder:WaitForChild("PingCheak")
 
-local Recipes = {
-MachineStar = {
-plrRailgun = {
-ItemsNeeded = { plrSteel = 10, plrMoney = 3000, plrStone = 30, plrFixBox = 2 },
-craftTime = 90,
-laborCost = 500,
-xpReward = 70,
-vipXpReward = 100,
-craftPowerNeeded = 10,
-},
+local FIREBASE_BASE = "https://soonpvp-58e44-default-rtdb.asia-southeast1.firebasedatabase.app"
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1421056647064977418/x2XllYpZrgE7qdELojafGoC1aXiG1FYYgJZYQKjag5siJhRFObxEfGET3iGztDzS-qUO"
+local AUTOBAN_WEBHOOK_URL = "https://discord.com/api/webhooks/1414704909101695007/PCZTZ19JhngJ3ut6gwVF5bl0yEfuY790fdJ0UofDPfTN_P5fhAp4jBoFH3bfxWueiLsb"
+local WEBHOOK_MESSAGE = "SODQI Enforcement Alert"
 
-plrPowerDrink = {
-ItemsNeeded = { plrDiamond = 5, plrMoney = 3000, plrGold = 5 },
-craftTime = 60,
-laborCost = 400,
-xpReward = 150,
-vipXpReward = 200,
-craftPowerNeeded = 10,
-},
+local lastPingPPC = {}
+local lastPingCheak = {}
+local protectionActive = {}
+local PPC_TIMEOUT = 8
+local CHEAK_TIMEOUT = 20
+local CHECK_INTERVAL = 1
 
-plrBallMagic = {
-ItemsNeeded = { plrDiamond = 2, plrMoney = 1000, plrStone = 5 },
-craftTime = 30,
-laborCost = 200,
-xpReward = 100,
-vipXpReward = 150,
-craftPowerNeeded = 10,
-},
-},
- 
-CraftTable = {
-plrBlackOil = {
-ItemsNeeded = { plrStone = 1, plrCoal = 2, plrScrap = 1 },
-craftTime = 90,
-laborCost = 10,
-xpReward = 20,
-vipXpReward = 50,
-craftPowerNeeded = 0,
-},
-
-plrFixBox = {
-ItemsNeeded = { plrScrap = 10, plrSteel = 3, plrBlackOil = 2 },
-craftTime = 10,
-laborCost = 20,
-xpReward = 15,
-vipXpReward = 20,
-craftPowerNeeded = 0,
-},
-
-plrSteel = {
-ItemsNeeded = { plrOldSteel = 2 },
-craftTime = 5,
-laborCost = 10,
-xpReward = 10,
-vipXpReward = 15,
-craftPowerNeeded = 0,
-},
-},
+local validPayloadTypes = {
+	Ping = true,
+	SilentKick = true,
+	ClientReport = true,
+	PartUpdate = true,
+	PlatformStandReport = true
 }
 
-local ActiveCrafts = {}
-
-local function getStat(player, name)
-    local vars = player:FindFirstChild("plrVars")
-    local bag = player:FindFirstChild("plrBag")
-    if vars and vars:FindFirstChild(name) then
-        return vars:FindFirstChild(name)
-    elseif bag and bag:FindFirstChild(name) then
-        return bag:FindFirstChild(name)
-    end
+local function firebaseRequest(method, path, bodyTable)
+	local url = FIREBASE_BASE .. path
+	local req = {
+		Url = url,
+		Method = method,
+		Headers = { ["Content-Type"] = "application/json" },
+		Body = bodyTable and HttpService:JSONEncode(bodyTable) or nil
+	}
+	local ok, res = pcall(function()
+		return HttpService:RequestAsync(req)
+	end)
+	if not ok or not res then return false, res end
+	if res.Success then
+		if res.Body and res.Body ~= "" then
+			local s, d = pcall(function()
+				return HttpService:JSONDecode(res.Body)
+			end)
+			if s then return true, d end
+		end
+		return true, nil
+	end
+	return false, res
 end
 
-local function processCraft(player, workshopName, itemName, amount)
-    ActiveCrafts[player] = ActiveCrafts[player] or {}
-    local key = workshopName..":"..itemName
-    if ActiveCrafts[player][key] then return end
-    ActiveCrafts[player][key] = true
-    
-    local recipeData = Recipes[workshopName] and Recipes[workshopName][itemName]
-    if not recipeData then
-        ActiveCrafts[player][key] = nil
-        return
-    end
-    
-    local ItemsNeeded = recipeData.ItemsNeeded
-    local craftTime = recipeData.craftTime or 5
-    local laborCost = recipeData.laborCost or 0
-    local xpReward = recipeData.xpReward or 0
-    local vipXpReward = recipeData.vipXpReward or xpReward
-    local craftPowerNeeded = recipeData.craftPowerNeeded or 0
-    
-    local craftPower = getStat(player, "plrCraftPower")
-    if not craftPower or craftPower.Value < craftPowerNeeded then
-        ActiveCrafts[player][key] = nil
-        return
-    end
-    
-    for i = 1, amount do
-        for reqName, cost in pairs(ItemsNeeded) do
-            local stat = getStat(player, reqName)
-            if not stat or stat.Value < cost then
-                ActiveCrafts[player][key] = nil
-                return
-            end
-        end
-        
-        local character = player.Character
-        if not character or not character:FindFirstChild("HumanoidRootPart") then
-            ActiveCrafts[player][key] = nil
-            return
-        end
-        local startPos = character.HumanoidRootPart.Position
-        
-        local elapsed = 0
-        while elapsed < craftTime do
-            if not character or not character:FindFirstChild("HumanoidRootPart") then
-                ActiveCrafts[player][key] = nil
-                return
-            end
-            local currentPos = character.HumanoidRootPart.Position
-            if (currentPos - startPos).Magnitude > 3 then
-                ActiveCrafts[player][key] = nil
-                return
-            end
-            elapsed += 0.1
-            task.wait(0.1)
-        end
-        
-        for reqName, cost in pairs(ItemsNeeded) do
-            local stat = getStat(player, reqName)
-            stat.Value -= cost
-        end
-        
-        local laborStat = getStat(player, "plrLabor")
-        if not laborStat or laborStat.Value < laborCost then
-            ActiveCrafts[player][key] = nil
-            return
-        end
-        laborStat.Value -= laborCost
-        
-        local output = getStat(player, itemName)
-        if not output then
-            ActiveCrafts[player][key] = nil
-            return
-        end
-        output.Value += 1
-        
-        local xpStat = getStat(player, "plrXp")
-        if xpStat then
-            local vip = getStat(player, "plrVip")
-            if vip and vip.Value == true then
-                xpStat.Value += vipXpReward
-            else
-                xpStat.Value += xpReward
-            end
-        end
-    end
-    
-    ActiveCrafts[player][key] = nil
+local function ensurePlayerNode(userId, baseLvl)
+	local path = ("/players/%s.json"):format(userId)
+	local payload = { plrBaseLvl = baseLvl or 0, Banned = false, Duration = 0 }
+	firebaseRequest("PATCH", path, payload)
 end
 
-CraftRemote.OnServerEvent:Connect(function(player, args)
-    if type(args) ~= "table" then return end
-    local workshopName = args[1]
-    local itemName = args[2]
-    local amount = args[3]
-    if typeof(workshopName) ~= "string" or typeof(itemName) ~= "string" or typeof(amount) ~= "number" then
-        return
-    end
-    processCraft(player, workshopName, itemName, amount)
+local function writeReportToFirebase(userId, reportEntry)
+	local ts = tostring(os.time())
+	local path = ("/players/%s/Reports/%s.json"):format(userId, ts)
+	firebaseRequest("PUT", path, reportEntry)
+end
+
+local function appendBanLog(userId, banRecord)
+	local pathGet = ("/BanLog/%s.json"):format(userId)
+	local ok, data = firebaseRequest("GET", pathGet, nil)
+	local nextIdx = 1
+	if ok and type(data) == "table" then
+		local max = 0
+		for k, _ in pairs(data) do
+			local n = tonumber(k)
+			if n and n > max then max = n end
+		end
+		nextIdx = max + 1
+	end
+	local pathPut = ("/BanLog/%s/%d.json"):format(userId, nextIdx)
+	firebaseRequest("PUT", pathPut, banRecord)
+end
+
+local function sendDiscordKickEmbed(player, reason)
+	pcall(function()
+		local timestamp = DateTime.now():ToIsoDate()
+		local embed = {
+			title = "SODQI SECURITY — Player Ejection",
+			color = 10038562,
+			fields = {
+				{name = "Username", value = player.Name or "Unknown", inline = true},
+				{name = "UserId", value = tostring(player.UserId or "Unknown"), inline = true},
+				{name = "PlaceId", value = tostring(game.PlaceId), inline = true},
+				{name = "JobId", value = tostring(game.JobId), inline = true},
+				{name = "UTC Time", value = timestamp, inline = false},
+				{name = "Enforcement Reason", value = reason or "Unspecified", inline = false},
+			},
+			footer = {text = "SODQI Enforcement • Vigilance Engaged"}
+		}
+		local payload = {username = "SODQI System", content = WEBHOOK_MESSAGE, embeds = {embed}}
+		HttpService:PostAsync(WEBHOOK_URL, HttpService:JSONEncode(payload), Enum.HttpContentType.ApplicationJson)
+	end)
+end
+
+local function sendAutoBanDiscordEmbed(playerName, userId, durationHuman)
+	pcall(function()
+		local timestamp = DateTime.now():ToIsoDate()
+		local embed = {
+			title = "SODQI AUTOBAN — Enforcement Notice",
+			description = "A player has been auto-banned by the SODQI AutoBan System.",
+			color = 16711680,
+			fields = {
+				{name = "Username", value = playerName or "Unknown", inline = true},
+				{name = "UserId", value = tostring(userId or "Unknown"), inline = true},
+				{name = "Duration", value = tostring(durationHuman or "Permanent"), inline = false},
+			},
+			footer = {text = "SODQI AutoBan • Automated Enforcement"},
+			timestamp = timestamp
+		}
+		local payload = {username = "SODQI AutoBan", embeds = {embed}}
+		HttpService:PostAsync(AUTOBAN_WEBHOOK_URL, HttpService:JSONEncode(payload), Enum.HttpContentType.ApplicationJson)
+	end)
+end
+
+local function determineBanDuration(priorBanCount)
+	local next = (priorBanCount or 0) + 1
+	if next == 1 then return 3600, "1 hour"
+	elseif next == 2 then return 7200, "2 hours"
+	elseif next == 3 then return 43200, "12 hours"
+	elseif next == 4 then return 86400, "24 hours"
+	else return 0, "Permanent" end
+end
+
+local function deletePlayerReports(userId)
+	local path = ("/players/%s/Reports.json"):format(userId)
+	firebaseRequest("DELETE", path, nil)
+end
+
+local function applyAutoBan(player, durSeconds, durHuman)
+	local userId = tostring(player.UserId)
+	firebaseRequest("PATCH", ("/players/%s.json"):format(userId), {
+		Banned = true,
+		Duration = durSeconds,
+		BanStart = os.time()
+	})
+	appendBanLog(userId, {
+		Reason = "AutoBan triggered on join",
+		Time = DateTime.now():ToIsoDate(),
+		Duration = durHuman
+	})
+	deletePlayerReports(userId)
+	local ok, plrVars = pcall(function()
+		return player:FindFirstChild("plrVars")
+	end)
+	if ok and plrVars then
+		local ab = plrVars:FindFirstChild("plrAutoBan") or Instance.new("BoolValue", plrVars)
+		ab.Name = "plrAutoBan"
+		ab.Value = true
+		local at = plrVars:FindFirstChild("plrAutoBanTimer") or Instance.new("StringValue", plrVars)
+		at.Name = "plrAutoBanTimer"
+		at.Value = durHuman
+	end
+	sendAutoBanDiscordEmbed(player.Name, userId, durHuman)
+end
+
+local function isHeartbeatReason(reason)
+	if not reason or type(reason) ~= "string" then return false end
+	if reason:find("Heartbeat Lost") then return true end
+	if reason:lower():find("no ppc") or reason:lower():find("no pingcheak") then return true end
+	return false
+end
+
+local function doKick(player, reason)
+	if typeof(player) ~= "Instance" or not player.Parent then return end
+	sendDiscordKickEmbed(player, reason)
+	if isHeartbeatReason(reason) then
+		pcall(function()
+			player:Kick("SODQI CLIENT ENFORCEMENT — " .. (reason or ""))
+		end)
+		return
+	end
+	local baseLvl = 0
+	local ok, plrVars = pcall(function()
+		return player:FindFirstChild("plrVars")
+	end)
+	if ok and plrVars then
+		local ok2, base = pcall(function()
+			local v = plrVars:FindFirstChild("plrBaseLvl")
+			return v and v.Value or 0
+		end)
+		if ok2 then baseLvl = base end
+	end
+	ensurePlayerNode(tostring(player.UserId), baseLvl)
+	writeReportToFirebase(tostring(player.UserId), {
+		Type = reason or "Unknown",
+		Time = DateTime.now():ToIsoDate(),
+		BaseLevel = baseLvl
+	})
+	local okR, dataR = firebaseRequest("GET", ("/players/%s/Reports.json"):format(tostring(player.UserId)), nil)
+	local recentCount = 0
+	if okR and type(dataR) == "table" then
+		for _ in pairs(dataR) do recentCount += 1 end
+	end
+	if recentCount >= 5 then
+		local okBl, blData = firebaseRequest("GET", ("/BanLog/%s.json"):format(tostring(player.UserId)), nil)
+		local priorBanCount = 0
+		if okBl and type(blData) == "table" then
+			for _k, _v in pairs(blData) do priorBanCount += 1 end
+		end
+		local durSeconds, durHuman = determineBanDuration(priorBanCount)
+		applyAutoBan(player, durSeconds, durHuman)
+		if durSeconds == 0 then
+			pcall(function() player:Kick("You Have Been Banned By AutoBanSystem\nDuration: Permanent") end)
+		else
+			pcall(function() player:Kick("You Have Been Banned By AutoBanSystem\nDuration: " .. durHuman) end)
+		end
+		return
+	end
+	pcall(function()
+		player:Kick("SODQI CLIENT ENFORCEMENT — " .. (reason or ""))
+	end)
+end
+
+local function startProtection(player)
+	if protectionActive[player.UserId] then return end
+	protectionActive[player.UserId] = true
+	lastPingPPC[player.UserId] = tick()
+	lastPingCheak[player.UserId] = tick()
+	task.spawn(function()
+		while protectionActive[player.UserId] and player.Parent do
+			task.wait(CHECK_INTERVAL)
+			local now = tick()
+			local lastPPC = lastPingPPC[player.UserId]
+			local lastCheak = lastPingCheak[player.UserId]
+			if not lastPPC or now - lastPPC > PPC_TIMEOUT then
+				if not (lastCheak and now - lastCheak <= PPC_TIMEOUT) then
+					doKick(player, "Heartbeat Lost — No PPC Ping for " .. PPC_TIMEOUT .. "s")
+					protectionActive[player.UserId] = false
+					break
+				end
+			end
+			if not lastCheak or now - lastCheak > CHEAK_TIMEOUT then
+				doKick(player, "Heartbeat Lost — No PingCheak Ping for " .. CHEAK_TIMEOUT .. "s")
+				protectionActive[player.UserId] = false
+				break
+			end
+		end
+	end)
+end
+
+PPC.OnServerEvent:Connect(function(player, payload)
+	if not protectionActive[player.UserId] then startProtection(player) end
+	lastPingPPC[player.UserId] = tick()
+	if type(payload) ~= "table" or not payload.type then
+		doKick(player, "Remote Exploit Detected — Invalid Payload")
+		return
+	end
+	if not validPayloadTypes[payload.type] then
+		doKick(player, "Remote Exploit Detected — Unauthorized Payload Type (" .. tostring(payload.type) .. ")")
+		return
+	end
+	if payload.type == "SilentKick" or payload.type == "ClientReport" or payload.type == "PartUpdate" then
+		doKick(player, tostring(payload.detail) or "Client Modification Reported")
+	elseif payload.type == "PlatformStandReport" then
+		doKick(player, "PlatformStand Exploit Detected")
+	end
+end)
+
+PingCheak.OnServerEvent:Connect(function(player)
+	if not protectionActive[player.UserId] then startProtection(player) end
+	lastPingCheak[player.UserId] = tick()
+end)
+
+local function checkReportsOnJoin(player)
+	local userId = tostring(player.UserId)
+	ensurePlayerNode(userId, 0)
+	local okR, reportsData = firebaseRequest("GET", ("/players/%s/Reports.json"):format(userId), nil)
+	if okR and type(reportsData) == "table" then
+		local count = 0
+		for _ in pairs(reportsData) do count += 1 end
+		if count >= 5 then
+			local okBl, blData = firebaseRequest("GET", ("/BanLog/%s.json"):format(userId), nil)
+			local priorBanCount = 0
+			if okBl and type(blData) == "table" then
+				for _k, _v in pairs(blData) do priorBanCount += 1 end
+			end
+			local durSeconds, durHuman = determineBanDuration(priorBanCount)
+			applyAutoBan(player, durSeconds, durHuman)
+			if durSeconds == 0 then
+				pcall(function() player:Kick("You Have Been Banned By AutoBanSystem\nDuration: Permanent") end)
+			else
+				pcall(function() player:Kick("You Have Been Banned By AutoBanSystem\nDuration: " .. durHuman) end)
+			end
+		end
+	end
+end
+
+Players.PlayerAdded:Connect(function(player)
+	task.spawn(function()
+		local function waitForPlrLoaded()
+			local plrVars = player:WaitForChild("plrVars", 15)
+			if not plrVars then return false end
+			local plrIsLoaded = plrVars:WaitForChild("plrIsLoaded", 15)
+			if not plrIsLoaded then return false end
+			if not plrIsLoaded.Value then
+				plrIsLoaded:GetPropertyChangedSignal("Value"):Wait()
+			end
+			return true
+		end
+		if waitForPlrLoaded() then
+			checkReportsOnJoin(player)
+			startProtection(player)
+		end
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	protectionActive[player.UserId] = nil
+	lastPingPPC[player.UserId] = nil
+	lastPingCheak[player.UserId] = nil
 end)
